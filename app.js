@@ -1,5 +1,21 @@
+var ls = {
+// from http://jsfiddle.net/7nzdzvj8/1/
+save : function(key, jsonData, expirationMS){
+  if (typeof (Storage) == "undefined") { return false; }
+  var record = {value: JSON.stringify(jsonData), timestamp: new Date().getTime() + expirationMS}
+  localStorage.setItem(key, JSON.stringify(record));
+  return jsonData;
+},
+load : function(key){
+  if (typeof (Storage) == "undefined") { return false; }
+  var record = JSON.parse(localStorage.getItem(key));
+  if (!record){return false;}
+  return (new Date().getTime() < record.timestamp && JSON.parse(record.value));
+}
+};
+
 var app = {
-  apiKey: '', // you get this from ~~SOE~~ daybreak?
+  apiKey: 's:theFarmMustGoOn', // you get this from ~~SOE~~ daybreak?
   data: {},
   $title: $('.title'),
   $outputHeader: $('.kills h1'),
@@ -13,23 +29,24 @@ var app = {
   tkcount: 0,
   killCount: 0,
   suicideCount: 0,
+  maxOutfitPlayers: 501,
 
   apis: {
     characterId: function (name) {
-      var url = "http://census.daybreakgames.com/" + app.apiKey + "/get/ps2:v2/character/?name.first_lower=" + name + "&c:resolve=online_status&callback=?";
+      var url = "//census.daybreakgames.com/" + app.apiKey + "/get/ps2:v2/character/?name.first_lower=" + name + "&c:resolve=online_status";
       return url;
     },
     killsByCharacters: function (chars) {
-      var url = "http://census.daybreakgames.com/" + app.apiKey + "/get/ps2:v2/characters_event/?character_id=" + chars + "&c:limit=1000&type=KILL&c:resolve=attacker,character&callback=?";
+      var url = "//census.daybreakgames.com/" + app.apiKey + "/get/ps2:v2/characters_event/?character_id=" + chars + "&c:limit=1000&type=KILL&c:resolve=character(name.first,faction_id)";
       return url;
     },
     deathsByCharacters: function (chars) {
-      var url = "http://census.daybreakgames.com/" + app.apiKey + "/get/ps2:v2/characters_event/?character_id=" + chars + "&c:limit=1000&type=DEATH&c:resolve=attacker,character&callback=?";
+      var url = "//census.daybreakgames.com/" + app.apiKey + "/get/ps2:v2/characters_event/?character_id=" + chars + "&c:limit=1000&type=DEATH&c:resolve=attacker(name.first,faction_id)";
       return url;
     },
     outfitCharacters: function (outfit) {
       outfit = outfit.split("[")[1].split("]")[0];
-      var url = "http://census.daybreakgames.com/" + app.apiKey + "/get/ps2:v2/outfit?alias_lower=" + outfit + "&c:resolve=member_character,member_faction&callback=?";
+      var url = "//census.daybreakgames.com/" + app.apiKey + "/get/ps2:v2/outfit?alias_lower=" + outfit + "&c:resolve=member_character(character_id,faction_id)";
       return url;
     }
   },
@@ -68,17 +85,51 @@ var app = {
     "25": "Briggs"
   },
 
-  zones: {
+  zoneFlavorText: {
     "2": "sweating it out on <strong>Indar</strong>.",
     "4": "slogging through <strong>Hossin</strong>.",
     "6": "enjoying <strong>Amerish</strong>.",
     "8": "chilling on <strong>Esamir</strong>.",
-    "96": "practicing in <strong>VR Training</strong>."
+    "96": "practicing in <strong>VR Training</strong>.",
+    "97": "practicing in <strong>VR Training</strong>.",
+    "98": "practicing in <strong>VR Training</strong>."
+  },
+  
+  zones: {
+    "2": "Indar",
+    "4": "Hossin",
+    "6": "Amerish",
+    "8": "Esamir",
+    "96": "VR Training",
+    "97": "VR Training",
+    "98": "VR Training"
   },
 
   init: function () {
     this.setUpBinds();
     $("#character-name").focus();
+  },
+  
+  getJson: function(url, callback) {
+    var useStorage = false;
+    var expirationMs = 1000 * 600;//10 minutes
+    var stored = useStorage && ls.load(url);
+    if (stored) {
+      callback(stored);
+    } else {
+      $.ajax({
+        type: "GET",
+        dataType: "jsonp",
+        cache: true,
+        url: url + "&_=" + Math.floor(Date.now() / expirationMs),
+        success: function(data) {
+          if (useStorage) {
+            ls.save(url, data, expirationMs);
+          }
+            callback(data);
+        }
+      });
+    }
   },
 
   setUpBinds: function () {
@@ -122,7 +173,7 @@ var app = {
 
     if (app.data.firstKill && app.data.isOnline){
       app.data.firstKill = false;
-      app.$note.append("<br />They were last seen " + app.zones[kills[0].zone_id]);
+      app.$note.append("<br />They were last seen " + app.zoneFlavorText[kills[0].zone_id]);
     }
 
     $(".loading").remove();
@@ -147,21 +198,21 @@ var app = {
     app.classmod = app.factionMap[parseInt(app.localFaction)];
 
     for (i; i < kills.length; i++) {
-      if (kills[i].hasOwnProperty("character") && kills[i].hasOwnProperty("attacker")) {
-        attackerName = kills[i].attacker.name.first;
-        chardata = kills[i].character;
-        defenderName = chardata.name.first;
+      if (kills[i].hasOwnProperty("character") || kills[i].hasOwnProperty("attacker")) {
+        attackerName = kills[i].attacker ? kills[i].attacker.name.first : realname;
+        defenderName = kills[i].character ? kills[i].character.name.first : realname;
         faction = (turtle) ? kills[i].attacker.faction_id : kills[i].character.faction_id;
         timestamp = parseInt(kills[i].timestamp) * 1000
         date = new Date(timestamp);
         date = date.format("mmmm dd - h:MMt");
+        zone = app.zones[kills[i].zone_id] || kills[i].zone_id;
 
         var link = (turtle) ? attackerName : defenderName;
        
         if (app.localFaction === faction) {
           if (attackerName !== defenderName) {
             $el = $("<li />", {
-              "html": '<a when="' + timestamp + '" who="'+link+'" class="' + app.classmod + ' ' + defenderName + '" href="/#' + link + '">' + attackerName + ' <i class="fa fa-long-arrow-right"></i> ' + defenderName + '</a><div class="timestamp float-right">' + date + '</div>'
+              "html": '<a when="' + timestamp + '" who="'+link+'" class="' + app.classmod + ' ' + htmlEscape(defenderName) + '" href="/#' + link + '">' + htmlEscape(attackerName) + ' <i class="fa fa-long-arrow-right"></i> ' + htmlEscape(defenderName) + '</a><div class="timestamp float-right"><span class="wide">On ' + zone + ' at </span>' + date + '</div>'
             });
             tkcount++;
             $list.push($el);
@@ -181,11 +232,11 @@ var app = {
 
     var percentage = ((tkcount / killCount) * 100).toFixed(2);
     if (turtle){
-      app.$deathsHeader.html("<span class='" + app.classmod + "'>" + realname + "</span> has been team-killed<br class='desktop'/> <span>" + percentage + "%</span> of their last <span>" + killCount + "</span> deaths.");
+      app.$deathsHeader.html("<span class='" + app.classmod + "'>" + htmlEscape(realname) + "</span> has been team-killed<br class='desktop'/> <span>" + percentage + "%</span> of their last <span>" + killCount + "</span> deaths.");
       app.$input.attr("placeholder", realname);
       app.$deathsList.append($list).attr("data-tks");
     } else {
-      app.$outputHeader.html("<span class='" + app.classmod + "'>" + realname + "</span> has killed a teammate<br class='desktop'/> <span>" + percentage + "%</span> of their last <span>" + killCount + "</span> kills<br class='desktop' /> while accumulating <span>" + suicideCount + "</span> suicide(s).");
+      app.$outputHeader.html("<span class='" + app.classmod + "'>" + htmlEscape(realname) + "</span> has killed a teammate<br class='desktop'/> <span>" + percentage + "%</span> of their last <span>" + killCount + "</span> kills<br class='desktop' /> while accumulating <span>" + suicideCount + "</span> suicide(s).");
       app.$input.attr("placeholder", realname);
       app.$outputList.append($list);
       
@@ -201,7 +252,7 @@ var app = {
     app.startLoading();
     var api = app.apis.characterId(name);
     var realname;
-    $.getJSON(api, function (data) {
+    app.getJson(api, function (data) {
       if (!data.character_list[0]) {
         app.$note.html("Name doesn't exist").slideDown();
       } else {
@@ -214,14 +265,14 @@ var app = {
         if (online && !app.outfit){
           var world = app.worlds[online];
           app.data.isOnline = true;
-          app.$note.addClass("text-center italic normal").html("<strong>" + realname + "</strong> is on <strong>" + world + "</strong> right now!").slideDown();
+          app.$note.addClass("text-center italic normal").html("<strong>" + htmlEscape(realname) + "</strong> is on <strong>" + world + "</strong> right now!").slideDown();
         }
-        $.getJSON(app.apis.killsByCharacters(id), function (data) {
+        app.getJson(app.apis.killsByCharacters(id), function (data) {
           var kills = data.characters_event_list;
           app.data.firstKill = true;
           app.addKillData(realname, kills, false);
         });
-        $.getJSON(app.apis.deathsByCharacters(id), function (data) {
+        app.getJson(app.apis.deathsByCharacters(id), function (data) {
           var deaths = data.characters_event_list;
           app.addKillData(realname, deaths, true);
         });
@@ -237,12 +288,13 @@ var app = {
     var members;
     var charids = [];
     var tag;
-    $.getJSON(api, function (data) {
+    app.getJson(api, function (data) {
       if (!data.outfit_list[0]) {
         app.$outputHeader.html("Outfit '" + tag + "' doesn't exist.");
       } else {
         app.outfitTag = data.outfit_list[0].alias;
         members = data.outfit_list[0].members;
+        app.outfitName = data.outfit_list[0].name;
         app.membersLength = members.length;
         app.localFaction = members[0].faction_id;
         var which = 0;
@@ -273,6 +325,12 @@ var app = {
     }
     waittime = (delay*chunks.length)/1000;
     app.$note.slideDown();
+    var oversize = "";
+    if (list.length >= app.maxOutfitPlayers) {
+      app.$outputHeader.html("Error: this outfit has <strong>" + list.length + "</strong> players, which is more than the maximum of <strong>" + (app.maxOutfitPlayers-1) + "</strong>");
+      $(".loading").remove();
+      return;
+    }
     app.$note.html("<div class='waittime'>This will take approximately " + waittime + " seconds to complete... ");
     app.$note.append( $("<div />",{
       "class": "progress",
@@ -293,9 +351,9 @@ var app = {
 
   chunkTimer: function(api, timeout){
     setTimeout( function(){
-      $.getJSON(api, function (data) {
+      app.getJson(api, function (data) {
         var kills = data.characters_event_list;
-        app.addKillData("["+app.outfitTag+"]", kills);
+        app.addKillData("["+app.outfitTag+"] " + app.outfitName, kills);
         var tick = parseInt($(".progress").attr("attr-tick"));
         var innerw = parseInt($(".progress .inner")[0].style.width) || 0;
         var newWidth = innerw + tick + "%";
@@ -314,6 +372,7 @@ $(document).ready(function () {
   var x = new RegExp(/(\[)[[A-z0-9]{1,4}?(\])/g);
 
   if (hash) {
+    $("#character-name").attr("placeholder", hash);
     var outfit = hash.match(x);
 
     if(!outfit){
@@ -324,9 +383,13 @@ $(document).ready(function () {
       app.getByOutfit(hash);
     }
   } else {
-    app.getByCharacter("higby");
+    app.getByCharacter("wrel");
   }
 });
+
+function htmlEscape(str) {
+  return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 /*
  * Date Format 1.2.3
